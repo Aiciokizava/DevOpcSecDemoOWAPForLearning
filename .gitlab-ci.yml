@@ -1,0 +1,63 @@
+stages:
+  - build
+  - security
+
+default:
+  image: maven:3.9.9-eclipse-temurin-21
+  cache:
+    key: maven
+    paths:
+      - .m2/repository
+
+generate_sbom:
+  stage: build
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - mvn -B -DskipTests verify
+    - test -f target/sbom.json
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - target/sbom.json
+
+upload_sbom_to_dependency_track:
+  stage: security
+  image: curlimages/curl:8.10.1
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  needs:
+    - job: generate_sbom
+      artifacts: true
+  script:
+    - test -f target/sbom.json
+    # Импорт BOM в Dependency-Track (endpoint может отличаться в вашей установке)
+    - |
+      curl -sS -X POST "$DT_URL/api/v1/bom" \
+        -H "X-Api-Key: $DT_API_KEY" \
+        -H "Accept: application/json" \
+        -F "project=$DT_PROJECT_UUID" \
+        -F "bom=@target/sbom.json" \
+        -F "autoCreate=false" \
+        -o dependency-track-upload.json
+    - cat dependency-track-upload.json
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - dependency-track-upload.json
+      - target/sbom.json
+
+dependency_check:
+  stage: security
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - mvn -B -DskipTests dependency-check:check
+    - ls -la target | sed -n '1,200p'
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - target/dependency-check-*
